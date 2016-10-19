@@ -5,3 +5,6 @@ authors = ["Michael Dunsmuir <mjdunsmuir@gmail.com>"]
 
 [dependencies]
 walkdir = "0.1"
+
+[dev-dependencies]
+tempdir = "0.3"
