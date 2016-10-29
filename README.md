@@ -1,3 +1,3 @@
 # cp_r
 
-Copy a directory recursively in the style of `cp -r`.
+Copy directories recursively in a straightforward and predictable way.
