@@ -1,5 +1,5 @@
 [package]
-name = "cp_r"
+name = "copy_dir"
 version = "0.1.0"
 authors = ["Michael Dunsmuir <mjdunsmuir@gmail.com>"]
 

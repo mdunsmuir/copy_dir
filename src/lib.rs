@@ -1,8 +1,12 @@
+//! The essential objective of this crate is to provide an API for copying
+//! directories and their contents in a straightforward and predictable way.
+//! See the documentation of the `copy_dir` function for more info.
+
 extern crate walkdir;
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::io::{Error, ErrorKind};
+use std::path::Path;
+use std::io::{Error, ErrorKind, Result};
 
 macro_rules! push_error {
     ($expr:expr, $vec:ident) => {
@@ -10,24 +14,72 @@ macro_rules! push_error {
             Err(e) => $vec.push(e),
             Ok(_) => (),
         }
-    }
+    };
 }
 
-pub fn cp_r<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
-                                            -> std::io::Result<Vec<Error>> {
-    {
-        let source_metadata = try!(fs::metadata(&from));
+macro_rules! make_err {
+    ($text:expr, $kind:expr) => {
+        Error::new($kind, $text)
+    };
 
-        // if the source file is not a directory, then we'll just copy it
-        // regular-like. I think this is what real cp does.
-        if !source_metadata.is_dir() {
-            let real_to = try!(actual_target(&from, &to, false));
-            return fs::copy(&from, &real_to).map(|_| Vec::new() );
-        }
+    ($text:expr) => {
+        make_err!($text, ErrorKind::Other)
+    };
+}
+
+/// Copy a directory and its contents
+///
+/// Unlike e.g. the `cp -r` command, the behavior of this function is simple
+/// and easy to understand. The file or directory at the source path is copied
+/// to the destination path. If the source path points to a directory, it will
+/// be copied recursively with its contents.
+///
+/// # Errors
+///
+/// * It's possible for many errors to occur during the recursive copy
+///   operation. These errors are all returned in a `Vec`. They may or may
+///   not be helpful or useful.
+/// * If the source path does not exist.
+/// * If the destination path exists.
+/// * If something goes wrong with copying a regular file, as with
+///   `std::fs::copy()`.
+/// * If something goes wrong creating the new root directory when copying
+///   a directory, as with `std::fs::create_dir`.
+///
+/// # Caveats/Limitations
+///
+/// I would like to add some flexibility around how "edge cases" in the copying
+/// operation are handled, but for now there is no flexibility and the following
+/// caveats and limitations apply (not by any means an exhaustive list):
+///
+/// * Hard links are not accounted for, i.e. if more than one hard link
+///   pointing to the same inode are to be copied, the data will be copied
+///   twice.
+/// * Filesystem boundaries may be crossed.
+/// * Symbolic links will be copied, not followed.
+pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
+                                                -> Result<Vec<Error>> {
+    if !from.as_ref().exists() {
+        return Err(make_err!(
+            "source path does not exist",
+            ErrorKind::NotFound
+        ));
+
+    } else if to.as_ref().exists() {
+        return Err(make_err!(
+            "target path exists",
+            ErrorKind::AlreadyExists
+        ))
     }
 
-    let real_to = try!(actual_target(&from, &to, true));
     let mut errors = Vec::new();
+
+    // copying a regular file is EZ
+    if from.as_ref().is_file() {
+        return fs::copy(&from, &to).map(|_| Vec::new() );
+    }
+
+    try!(fs::create_dir(&to));
 
     for entry in walkdir::WalkDir::new(&from)
         .min_depth(1)
@@ -36,21 +88,21 @@ pub fn cp_r<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
 
         let relative_path = match entry.path().strip_prefix(&from) {
             Ok(rp) => rp,
-            Err(_) => panic!("strip_prefix failed; this is a probably a bug in cp_r"),
+            Err(_) => panic!("strip_prefix failed; this is a probably a bug in copy_dir"),
         };
 
         let target_path = {
-            let mut target_path = real_to.clone();
+            let mut target_path = to.as_ref().to_path_buf();
             target_path.push(relative_path);
             target_path
         };
 
         let source_metadata = match entry.metadata() {
             Err(_) => {
-                errors.push(Error::new(
-                    ErrorKind::Other,
-                    format!("walkdir metadata error for {:?}", entry.path())
-                ));
+                errors.push(make_err!(format!(
+                    "walkdir metadata error for {:?}",
+                    entry.path()
+                )));
 
                 continue
             },
@@ -61,9 +113,13 @@ pub fn cp_r<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
         if source_metadata.is_dir() {
             push_error!(fs::create_dir(&target_path), errors);
             push_error!(
-                fs::set_permissions(&target_path, source_metadata.permissions()),
+                fs::set_permissions(
+                    &target_path,
+                    source_metadata.permissions()
+                ),
                 errors
             );
+
         } else {
             push_error!(fs::copy(entry.path(), &target_path), errors);
         }
@@ -71,65 +127,6 @@ pub fn cp_r<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
 
     Ok(errors)
 }
-
-fn actual_target<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q,
-                                                 create_dir: bool)
-                                                 -> std::io::Result<PathBuf> {
-    match fs::metadata(&to) {
-        // if there is nothing at the target path, we create a directory, EZ
-        Err(ref err) if err.kind() == ErrorKind::NotFound => {
-            if create_dir { try!(fs::create_dir(&to)); }
-            Ok(to.as_ref().to_path_buf())
-        },
-
-        Err(err) => return Err(err),
-
-        // if there is something, ...
-        Ok(md) => {
-
-            // if it's a directory, we'll create a new directory underneath
-            // it with the same basename as the source (this is what real cp
-            // does) and that'll be the target of the copy.
-            if md.is_dir() {
-                match from.as_ref().file_name() {
-                    None => return Err(Error::new(
-                        ErrorKind::Other,
-                        "could not get basename of source path"
-                    )),
-
-                    Some(basename) => {
-                        let mut real_to = to.as_ref().to_path_buf();
-                        real_to.push(basename);
-
-                        match fs::metadata(&real_to) {
-                            Err(ref err) if err.kind() == ErrorKind::NotFound =>
-                                if create_dir { try!(fs::create_dir(&real_to)) },
-
-                            Err(err) => return Err(err),
-
-                            Ok(md) => if !md.is_dir() {
-                                return Err(Error::new(
-                                    ErrorKind::Other,
-                                    format!("{:?} is not a directory", real_to)
-                                ))
-                            }
-                        }
-                        Ok(real_to)
-                    },
-                }
-
-            // if it's not a directory, we can't do anything
-            // this is also what real cp does
-            } else {
-                return Err(Error::new(
-                    ErrorKind::AlreadyExists,
-                    "target exists and is not a directory"
-                ))
-            }
-        },
-    }
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -146,43 +143,52 @@ mod tests {
     #[test]
     fn single_file() {
         let file = File("foo.file");
-        assert_we_match_the_real_thing(&file, false, None);
         assert_we_match_the_real_thing(&file, true, None);
-    }
-
-    #[test]
-    fn single_file_implicit_into_directory() {
-        let file = File("foo");
-        let already_there = Dir("foo", Vec::new());
-        assert_we_match_the_real_thing(&file, true, Some(&already_there));
     }
 
     #[test]
     fn directory_with_file() {
         let dir = Dir("foo", vec![
-            File("bar")
+            File("bar"),
+            Dir("baz", vec![
+                File("quux"),
+                File("fobe")
+            ])
         ]);
-        assert_we_match_the_real_thing(&dir, false, None);
         assert_we_match_the_real_thing(&dir, true, None);
     }
 
     #[test]
-    fn directory_with_file_implicit_into_directory() {
-        let dir = Dir("foo", vec![
-            File("bar")
-        ]);
-        let already_there = Dir("foo", Vec::new());
-        assert_we_match_the_real_thing(&dir, true, Some(&already_there));
+    fn source_does_not_exist() {
+        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
+        let source_path = base_dir.as_ref().join("noexist.file");
+        match super::copy_dir(&source_path, "dest.file") {
+            Ok(_) => panic!("expected Err"),
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::NotFound => (),
+                _ => panic!("expected kind NotFound"),
+            },
+        }
     }
 
     #[test]
-    fn directory_file_already_there() {
-        let dir = Dir("foo", vec![
-            File("bar")
-        ]);
-        let already_there = File("foo");
-        //assert_we_match_the_real_thing(&dir, false, Some(&already_there));
-        assert_we_match_the_real_thing(&dir, true, Some(&already_there));
+    fn target_exists() {
+        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
+        let source_path = base_dir.as_ref().join("exist.file");
+        let target_path = base_dir.as_ref().join("exist2.file");
+
+        {
+            fs::File::create(&source_path).unwrap();
+            fs::File::create(&target_path).unwrap();
+        }
+
+        match super::copy_dir(&source_path, &target_path) {
+            Ok(_) => panic!("expected Err"),
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::AlreadyExists => (),
+                _ => panic!("expected kind AlreadyExists")
+            }
+        }
     }
 
     // utility stuff below here
@@ -260,7 +266,7 @@ mod tests {
     fn assert_we_match_the_real_thing(dir: &DirMaker,
                                       explicit_name: bool,
                                       o_pre_state: Option<&DirMaker>) {
-        let base_dir = tempdir::TempDir::new("cp_r_test").unwrap();
+        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
 
         let source_dir = base_dir.as_ref().join("source");
         let our_dir = base_dir.as_ref().join("ours");
@@ -287,7 +293,7 @@ mod tests {
             pre_state.create(&their_dir).unwrap();
         }
 
-        let we_good = super::cp_r(&source_path, &our_target).is_ok();
+        let we_good = super::copy_dir(&source_path, &our_target).is_ok();
 
         let their_status = Command::new("cp")
             .arg("-r")
@@ -320,7 +326,7 @@ mod tests {
             ]
         );
 
-        let base_dir = tempdir::TempDir::new("cp_r_test").unwrap();
+        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
 
         let a_path = base_dir.as_ref().join("a");
         let b_path = base_dir.as_ref().join("b");
@@ -353,7 +359,7 @@ mod tests {
             ]
         );
 
-        let base_dir = tempdir::TempDir::new("cp_r_test").unwrap();
+        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
 
         let a_path = base_dir.as_ref().join("a");
         let b_path = base_dir.as_ref().join("b");
