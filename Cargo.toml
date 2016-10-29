@@ -1,7 +1,16 @@
 [package]
 name = "copy_dir"
 version = "0.1.0"
+description = "A utility for inspecting disk usage in directory trees."
+license = "MIT"
 authors = ["Michael Dunsmuir <mjdunsmuir@gmail.com>"]
+homepage = "https://github.com/mdunsmuir/copy_dir"
+include = [
+    "**/*.rs",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+]
 
 [dependencies]
 walkdir = "0.1"
