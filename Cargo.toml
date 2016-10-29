@@ -1,7 +1,7 @@
 [package]
 name = "copy_dir"
-version = "0.1.0"
-description = "A utility for inspecting disk usage in directory trees."
+version = "0.1.1"
+description = "Copy directories recursively in a straightforward and predictable way."
 license = "MIT"
 authors = ["Michael Dunsmuir <mjdunsmuir@gmail.com>"]
 homepage = "https://github.com/mdunsmuir/copy_dir"
