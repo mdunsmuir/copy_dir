@@ -1,6 +1,6 @@
 [package]
 name = "copy_dir"
-version = "0.1.1"
+version = "0.1.2"
 description = "Copy directories recursively in a straightforward and predictable way."
 license = "MIT"
 authors = ["Michael Dunsmuir <mjdunsmuir@gmail.com>"]
@@ -10,6 +10,7 @@ include = [
     "Cargo.toml",
     "LICENSE",
     "README.md",
+    "CHANGELOG.md",
 ]
 
 [dependencies]
