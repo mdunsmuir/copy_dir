@@ -354,14 +354,6 @@ mod tests {
             .status()
             .unwrap();
 
-        let tree_output = Command::new("tree")
-            .arg(base_dir.as_ref().as_os_str())
-            .output()
-            .unwrap();
-
-        println!("{}",
-                 std::str::from_utf8(tree_output.stdout.as_slice()).unwrap());
-
         // TODO any way to ask cp whether it worked or not?
         // portability?
         // assert_eq!(we_good, their_status.success());
