@@ -45,6 +45,8 @@ macro_rules! make_err {
 ///   `std::fs::copy()`.
 /// * If something goes wrong creating the new root directory when copying
 ///   a directory, as with `std::fs::create_dir`.
+/// * If you try to copy a directory to a path prefixed by itself i.e.
+///   `copy_dir(".", "./foo")`. See below for more details.
 ///
 /// # Caveats/Limitations
 ///
@@ -52,6 +54,11 @@ macro_rules! make_err {
 /// operation are handled, but for now there is no flexibility and the following
 /// caveats and limitations apply (not by any means an exhaustive list):
 ///
+/// * You cannot currently copy a directory into itself i.e.
+///   `copy_dir(".", "./foo")`. This is because we are recursively walking
+///   the directory to be copied *while* we're copying it, so in this edge
+///   case you get an infinite recursion. Fixing this is the top of my list
+///   of things to do with this crate.
 /// * Hard links are not accounted for, i.e. if more than one hard link
 ///   pointing to the same inode are to be copied, the data will be copied
 ///   twice.
@@ -80,6 +87,29 @@ pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
     }
 
     try!(fs::create_dir(&to));
+
+    // The approach taken by this code (i.e. walkdir) will not gracefully
+    // handle copying a directory into itself, so we're going to simply
+    // disallow it by checking the paths. This is a thornier problem than I
+    // wish it was, and I'd like to find a better solution, but for now I
+    // would prefer to return an error rather than having the copy blow up
+    // in users' faces. Ultimately I think a solution to this will involve
+    // not using walkdir at all, and might come along with better handling
+    // of hard links.
+    let target_is_under_source = try!(
+        from.as_ref()
+            .canonicalize()
+            .and_then(|fc| to.as_ref().canonicalize().map(|tc| (fc, tc) ))
+            .map(|(fc, tc)| tc.starts_with(fc) )
+    );
+
+    if target_is_under_source {
+        try!(fs::remove_dir(&to));
+
+        return Err(make_err!(
+            "cannot copy to a path prefixed by the source path"
+        ));
+    }
 
     for entry in walkdir::WalkDir::new(&from)
         .min_depth(1)
@@ -189,6 +219,28 @@ mod tests {
                 _ => panic!("expected kind AlreadyExists")
             }
         }
+    }
+
+    #[test]
+    fn attempt_copy_under_self() {
+        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
+        let dir = Dir("foo", vec![
+            File("bar"),
+            Dir("baz", vec![
+                File("quux"),
+                File("fobe")
+            ])
+        ]);
+        dir.create(&base_dir).unwrap();
+
+        let from = base_dir.as_ref().join("foo");
+        let to = from.as_path().join("beez");
+
+        let copy_result = super::copy_dir(&from, &to);
+        assert!(copy_result.is_err());
+
+        let copy_err = copy_result.unwrap_err();
+        assert_eq!(copy_err.kind(), std::io::ErrorKind::Other);
     }
 
     // utility stuff below here
