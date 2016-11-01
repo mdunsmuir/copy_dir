@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](http://keepachangelog.com/).
 
-## 0.1.2 - 2016-10-31
+## [0.1.2] - 2016-10-31
 
 ### Fixed
 
@@ -11,8 +11,11 @@ is based on [Keep a Changelog](http://keepachangelog.com/).
   This should eventually be supported, but a good solution will require
   significant thought and rework.
 
-## 0.1.1 - 2016-10-29
+## [0.1.1] - 2016-10-29
 
 ### Fixed
 
 - Totally wrong description in `Cargo.toml`
+
+[0.1.2]: https://github.com/mdunsmuir/copy_dir/compare/0.1.1...0.1.2
+[0.1.1]: https://github.com/mdunsmuir/copy_dir/compare/0.1.0...0.1.1
