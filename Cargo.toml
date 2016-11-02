@@ -17,4 +17,4 @@ include = [
 walkdir = "0.1"
 
 [dev-dependencies]
-tempdir = "0.3"
+fs_test_helpers = { git = "https://github.com/mdunsmuir/fs_test_helpers" }

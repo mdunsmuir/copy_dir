@@ -29,8 +29,7 @@ macro_rules! make_err {
 
 /// Copy a directory and its contents
 ///
-/// Unlike e.g. the `cp -r` command, the behavior of this function is simple
-/// and easy to understand. The file or directory at the source path is copied
+/// The file or directory at the source path is copied
 /// to the destination path. If the source path points to a directory, it will
 /// be copied recursively with its contents.
 ///
@@ -168,21 +167,27 @@ mod tests {
     use std::process::Command;
 
     extern crate walkdir;
-    extern crate tempdir;
+
+    extern crate fs_test_helpers;
+    use self::fs_test_helpers::{
+        TempDir,
+        Fake,
+        assert_files_have_same_contents,
+    };
 
     #[test]
     fn single_file() {
-        let file = File("foo.file");
+        let file = Fake::file("foo.file");
         assert_we_match_the_real_thing(&file, true, None);
     }
 
     #[test]
     fn directory_with_file() {
-        let dir = Dir("foo", vec![
-            File("bar"),
-            Dir("baz", vec![
-                File("quux"),
-                File("fobe")
+        let dir = Fake::dir("foo", vec![
+            Fake::file("bar").fill_with_uuid(),
+            Fake::dir("baz", vec![
+                Fake::file("quux").fill_with_uuid(),
+                Fake::file("fobe").fill_with_uuid()
             ])
         ]);
         assert_we_match_the_real_thing(&dir, true, None);
@@ -190,7 +195,7 @@ mod tests {
 
     #[test]
     fn source_does_not_exist() {
-        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
+        let base_dir = TempDir::new("copy_dir_test").unwrap();
         let source_path = base_dir.as_ref().join("noexist.file");
         match super::copy_dir(&source_path, "dest.file") {
             Ok(_) => panic!("expected Err"),
@@ -203,7 +208,7 @@ mod tests {
 
     #[test]
     fn target_exists() {
-        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
+        let base_dir = TempDir::new("copy_dir_test").unwrap();
         let source_path = base_dir.as_ref().join("exist.file");
         let target_path = base_dir.as_ref().join("exist2.file");
 
@@ -223,12 +228,12 @@ mod tests {
 
     #[test]
     fn attempt_copy_under_self() {
-        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
-        let dir = Dir("foo", vec![
-            File("bar"),
-            Dir("baz", vec![
-                File("quux"),
-                File("fobe")
+        let base_dir = TempDir::new("copy_dir_test").unwrap();
+        let dir = Fake::dir("foo", vec![
+            Fake::file("bar"),
+            Fake::dir("baz", vec![
+                Fake::file("quux"),
+                Fake::file("fobe")
             ])
         ]);
         dir.create(&base_dir).unwrap();
@@ -241,44 +246,6 @@ mod tests {
 
         let copy_err = copy_result.unwrap_err();
         assert_eq!(copy_err.kind(), std::io::ErrorKind::Other);
-    }
-
-    // utility stuff below here
-
-    enum DirMaker<'a> {
-        Dir(&'a str, Vec<DirMaker<'a>>),
-        File(&'a str),
-    }
-
-    use self::DirMaker::*;
-
-    impl<'a> DirMaker<'a> {
-        fn create<P: AsRef<Path>>(&self, base: P) -> std::io::Result<()> {
-            match *self {
-                Dir(ref name, ref contents) => {
-                    let path = base.as_ref().join(name);
-                    try!(fs::create_dir(&path));
-
-                    for thing in contents {
-                        try!(thing.create(&path));
-                    }
-                },
-
-                File(ref name) => {
-                    let path = base.as_ref().join(name);
-                    try!(fs::File::create(path));
-                }
-            }
-
-            Ok(())
-        }
-
-        fn name(&self) -> &str {
-            match *self {
-                Dir(name, _) => name,
-                File(name) => name,
-            }
-        }
     }
 
     fn assert_dirs_same<P: AsRef<Path>>(a: P, b: P) {
@@ -304,6 +271,13 @@ mod tests {
 
                     assert_eq!(na.file_type(), nb.file_type());
 
+                    if na.file_type().is_file() {
+                        assert_files_have_same_contents(
+                            &na.path(),
+                            &nb.path(),
+                        )
+                    }
+
                     // TODO test permissions
                 }
 
@@ -315,10 +289,10 @@ mod tests {
         }
     }
 
-    fn assert_we_match_the_real_thing(dir: &DirMaker,
+    fn assert_we_match_the_real_thing(dir: &Fake,
                                       explicit_name: bool,
-                                      o_pre_state: Option<&DirMaker>) {
-        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
+                                      o_pre_state: Option<&Fake>) {
+        let base_dir = TempDir::new("copy_dir_test").unwrap();
 
         let source_dir = base_dir.as_ref().join("source");
         let our_dir = base_dir.as_ref().join("ours");
@@ -362,15 +336,15 @@ mod tests {
 
     #[test]
     fn dir_maker_and_assert_dirs_same_baseline() {
-        let dir = Dir(
+        let dir = Fake::dir(
             "foobar",
             vec![
-                File("bar"),
-                Dir("baz", Vec::new())
+                Fake::file("bar"),
+                Fake::dir("baz", Vec::new())
             ]
         );
 
-        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
+        let base_dir = TempDir::new("copy_dir_test").unwrap();
 
         let a_path = base_dir.as_ref().join("a");
         let b_path = base_dir.as_ref().join("b");
@@ -387,23 +361,23 @@ mod tests {
     #[test]
     #[should_panic]
     fn assert_dirs_same_properly_fails() {
-        let dir = Dir(
+        let dir = Fake::dir(
             "foobar",
             vec![
-                File("bar"),
-                Dir("baz", Vec::new())
+                Fake::file("bar"),
+                Fake::dir("baz", Vec::new())
             ]
         );
 
-        let dir2 = Dir(
+        let dir2 = Fake::dir(
             "foobar",
             vec![
-                File("fobe"),
-                File("beez")
+                Fake::file("fobe"),
+                Fake::file("beez")
             ]
         );
 
-        let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
+        let base_dir = TempDir::new("copy_dir_test").unwrap();
 
         let a_path = base_dir.as_ref().join("a");
         let b_path = base_dir.as_ref().join("b");
