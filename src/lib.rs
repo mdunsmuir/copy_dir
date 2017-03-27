@@ -9,11 +9,13 @@ use std::io;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-// TODO macro this block for portability
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
+#[cfg(unix)]
 type UniqueId = (u64, u64);
 
+#[cfg(unix)]
 fn new_os_file<P: AsRef<Path>>(path: P) -> Box<OsFile<UniqueId=UniqueId>> {
     Box::new(LunixFile { path: path.as_ref().to_path_buf() })
 }
@@ -106,7 +108,8 @@ impl OsFile for LunixFile {
         self.path.as_ref()
     }
 
-    // TODO macro in different variants here for linux/unix
+
+    #[cfg(unix)]
     fn unique_id(&self) -> Result<Self::UniqueId> {
         let metadata = self.metadata()?;
         Ok((metadata.dev(), metadata.ino()))
@@ -128,15 +131,11 @@ impl OsFile for LunixFile {
             )
 
         } else if metadata.is_dir() {
-            // if this hasn't been set yet, then this must be the root of
-            // the copy, and therefore we can set it to the current
-            // destination
-            if let None = root_destination {
-                root_destination = Some(unique_id);
-
             // we ignore the root of the new copy so we don't recursively copy
             // forever or until computer gets sad
-            } else if unique_id == root_destination.unwrap() {
+            if root_destination.is_some() &&
+                root_destination.unwrap() == unique_id {
+
                 handle!(
                     handler,
                     Err(Error::SourceIsDestinationRoot {
@@ -151,6 +150,17 @@ impl OsFile for LunixFile {
                 handler,
                 fs::create_dir_all(destination)
             );
+
+            if root_destination.is_none() {
+                root_destination = Some(
+                    handle!(
+                        handler,
+                        LunixFile {
+                            path: destination.to_path_buf()
+                        }.unique_id()
+                    )
+                );
+            }
 
             for entry in handle!(handler, fs::read_dir(&self.path)) {
                 let entry = handle!(handler, entry);
