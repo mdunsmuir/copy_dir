@@ -2,29 +2,184 @@
 //! directories and their contents in a straightforward and predictable way.
 //! See the documentation of the `copy_dir` function for more info.
 
-extern crate walkdir;
+#[macro_use]
+extern crate log;
 
+use std::io;
 use std::fs;
-use std::path::Path;
-use std::io::{Error, ErrorKind, Result};
+use std::path::{Path, PathBuf};
 
-macro_rules! push_error {
-    ($expr:expr, $vec:ident) => {
-        match $expr {
-            Err(e) => $vec.push(e),
-            Ok(_) => (),
-        }
-    };
+// TODO macro this block for portability
+use std::os::unix::fs::MetadataExt;
+
+type UniqueId = (u64, u64);
+
+fn new_os_file<P: AsRef<Path>>(path: P) -> Box<OsFile<UniqueId=UniqueId>> {
+    Box::new(LunixFile { path: path.as_ref().to_path_buf() })
+}
+// TODO macro above
+
+#[derive(Debug)]
+pub enum Error {
+    DestinationExists {
+        source: PathBuf,
+        destination: PathBuf
+    },
+    SourceDoesNotExist(PathBuf),
+    SourceIsDestinationRoot {
+        source: PathBuf,
+        destination: PathBuf
+    },
+    Unknown(PathBuf),
+    Io(io::Error),
 }
 
-macro_rules! make_err {
-    ($text:expr, $kind:expr) => {
-        Error::new($kind, $text)
-    };
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Self {
+        Error::Io(err)
+    }
+}
 
-    ($text:expr) => {
-        make_err!($text, ErrorKind::Other)
-    };
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// This can be used to specify the error reporting behavior of the 
+/// `copy_dir_with_handler` function.
+#[derive(Debug)]
+pub enum Handler {
+    /// Supply a vector that will be filled with errors
+    Vector(Vec<Error>),
+
+    /// Log errors, as per the `log` crate (client must initialize their
+    /// own logger object)
+    Log,
+    ///
+    /// Silently swallow errors
+    Ignore,
+}
+
+impl Handler {
+    fn handle(&mut self, error: Error) {
+        match *self {
+            Handler::Vector(ref mut vec) => vec.push(error),
+            Handler::Log => error!("{:?}", error),
+            _ => (),
+        }
+    }
+}
+
+macro_rules! handle {
+    ($handler:expr, $expr:expr) => {
+        match $expr {
+            Err(err) => {
+                $handler.handle(Error::from(err));
+                return;
+            },
+            Ok(value) => value,
+        }
+    }
+}
+
+trait OsFile {
+    type UniqueId;
+
+    fn path(&self) -> &Path;
+    fn unique_id(&self) -> Result<UniqueId>;
+    fn copy(&self,
+            destination: &Path,
+            root_destination: Option<Self::UniqueId>,
+            error_handler: &mut Handler);
+
+    fn metadata(&self) -> Result<std::fs::Metadata> {
+        std::fs::metadata(&self.path())
+            .map_err( |err| Error::from(err) )
+    }
+}
+
+struct LunixFile {
+    path: PathBuf,
+}
+
+impl OsFile for LunixFile {
+    type UniqueId = (u64, u64); // dev and inode
+
+    fn path(&self) -> &Path {
+        self.path.as_ref()
+    }
+
+    // TODO macro in different variants here for linux/unix
+    fn unique_id(&self) -> Result<Self::UniqueId> {
+        let metadata = self.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
+    fn copy(&self,
+            destination: &Path,
+            mut root_destination: Option<UniqueId>,
+            handler: &mut Handler) {
+
+        let unique_id = handle!(handler, self.unique_id());
+        let metadata = handle!(handler, self.metadata());
+
+        if metadata.is_file() {
+            handle!(
+                handler,
+                fs::copy(&self.path, destination).map( |_| () )
+                    .map_err( |err| Error::from(err) )
+            )
+
+        } else if metadata.is_dir() {
+            // if this hasn't been set yet, then this must be the root of
+            // the copy, and therefore we can set it to the current
+            // destination
+            if let None = root_destination {
+                root_destination = Some(unique_id);
+
+            // we ignore the root of the new copy so we don't recursively copy
+            // forever or until computer gets sad
+            } else if unique_id == root_destination.unwrap() {
+                handle!(
+                    handler,
+                    Err(Error::SourceIsDestinationRoot {
+                        source: self.path.clone(),
+                        destination: destination.to_path_buf(),
+                    })
+                );
+                return
+            }
+
+            handle!(
+                handler,
+                fs::create_dir_all(destination)
+            );
+
+            for entry in handle!(handler, fs::read_dir(&self.path)) {
+                let entry = handle!(handler, entry);
+
+                LunixFile {
+                    path: entry.path()
+                }.copy(
+                    &destination.join(entry.file_name()),
+                    root_destination,
+                    handler
+                );
+            }
+
+            // do this last just to avoid any weirdness during the copy
+            // probably totally unnecessary, but why not?
+            handle!(
+                handler,
+                fs::set_permissions(destination, metadata.permissions())
+            );
+
+        } else {
+            handle!(
+                handler,
+                Err(Error::Unknown(self.path.clone()))
+            )
+        }
+    }
+
+    // TODO override metadata method to cache it
 }
 
 /// Copy a directory and its contents
@@ -43,8 +198,8 @@ macro_rules! make_err {
 /// * If something goes wrong with copying a regular file, as with
 ///   `std::fs::copy()`.
 /// * If something goes wrong creating the new root directory when copying
-///   a directory, as with `std::fs::create_dir`.
-/// * If you try to copy a directory to a path prefixed by itself i.e.
+///   a directory, as with `std::fs::create_dir()`.
+/// * If you try to copy a directory to a path prefixed by itself e.g.
 ///   `copy_dir(".", "./foo")`. See below for more details.
 ///
 /// # Caveats/Limitations
@@ -63,98 +218,31 @@ macro_rules! make_err {
 ///   twice.
 /// * Filesystem boundaries may be crossed.
 /// * Symbolic links will be copied, not followed.
-pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
-                                                -> Result<Vec<Error>> {
+pub fn copy_dir<Q, P>(from: P, to: Q) -> Result<()>
+    where Q: AsRef<Path>, P: AsRef<Path> {
+
+    copy_dir_with_handler(from, to, &mut Handler::Ignore)
+}
+
+/// Same as copy_dir, but allows clients to specify a `Handler` for any errors
+/// that occur. 
+pub fn copy_dir_with_handler<Q, P>(from: P, to: Q,
+                                   handler: &mut Handler) -> Result<()>
+    where Q: AsRef<Path>, P: AsRef<Path> {
+
     if !from.as_ref().exists() {
-        return Err(make_err!(
-            "source path does not exist",
-            ErrorKind::NotFound
-        ));
+        return Err(Error::SourceDoesNotExist(from.as_ref().to_path_buf()));
 
     } else if to.as_ref().exists() {
-        return Err(make_err!(
-            "target path exists",
-            ErrorKind::AlreadyExists
-        ))
+        return Err(Error::DestinationExists {
+            source: from.as_ref().to_path_buf(),
+            destination: to.as_ref().to_path_buf(),
+        });
     }
 
-    let mut errors = Vec::new();
-
-    // copying a regular file is EZ
-    if from.as_ref().is_file() {
-        return fs::copy(&from, &to).map(|_| Vec::new() );
-    }
-
-    try!(fs::create_dir(&to));
-
-    // The approach taken by this code (i.e. walkdir) will not gracefully
-    // handle copying a directory into itself, so we're going to simply
-    // disallow it by checking the paths. This is a thornier problem than I
-    // wish it was, and I'd like to find a better solution, but for now I
-    // would prefer to return an error rather than having the copy blow up
-    // in users' faces. Ultimately I think a solution to this will involve
-    // not using walkdir at all, and might come along with better handling
-    // of hard links.
-    let target_is_under_source = try!(
-        from.as_ref()
-            .canonicalize()
-            .and_then(|fc| to.as_ref().canonicalize().map(|tc| (fc, tc) ))
-            .map(|(fc, tc)| tc.starts_with(fc) )
-    );
-
-    if target_is_under_source {
-        try!(fs::remove_dir(&to));
-
-        return Err(make_err!(
-            "cannot copy to a path prefixed by the source path"
-        ));
-    }
-
-    for entry in walkdir::WalkDir::new(&from)
-        .min_depth(1)
-        .into_iter()
-        .filter_map(|e| e.ok() ) {
-
-        let relative_path = match entry.path().strip_prefix(&from) {
-            Ok(rp) => rp,
-            Err(_) => panic!("strip_prefix failed; this is a probably a bug in copy_dir"),
-        };
-
-        let target_path = {
-            let mut target_path = to.as_ref().to_path_buf();
-            target_path.push(relative_path);
-            target_path
-        };
-
-        let source_metadata = match entry.metadata() {
-            Err(_) => {
-                errors.push(make_err!(format!(
-                    "walkdir metadata error for {:?}",
-                    entry.path()
-                )));
-
-                continue
-            },
-
-            Ok(md) => md,
-        };
-
-        if source_metadata.is_dir() {
-            push_error!(fs::create_dir(&target_path), errors);
-            push_error!(
-                fs::set_permissions(
-                    &target_path,
-                    source_metadata.permissions()
-                ),
-                errors
-            );
-
-        } else {
-            push_error!(fs::copy(entry.path(), &target_path), errors);
-        }
-    }
-
-    Ok(errors)
+    let source = new_os_file(&from);
+    source.copy(to.as_ref(), None, handler);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -167,6 +255,8 @@ mod tests {
     use std::process::Command;
 
     extern crate walkdir;
+
+    use super::Error;
 
     extern crate fs_test_helpers;
     use self::fs_test_helpers::{
@@ -199,9 +289,9 @@ mod tests {
         let source_path = base_dir.as_ref().join("noexist.file");
         match super::copy_dir(&source_path, "dest.file") {
             Ok(_) => panic!("expected Err"),
-            Err(err) => match err.kind() {
-                std::io::ErrorKind::NotFound => (),
-                _ => panic!("expected kind NotFound"),
+            Err(err) => match err {
+                Error::SourceDoesNotExist { .. } => (),
+                _ => panic!("expected SourceDoesNotExist"),
             },
         }
     }
@@ -219,8 +309,8 @@ mod tests {
 
         match super::copy_dir(&source_path, &target_path) {
             Ok(_) => panic!("expected Err"),
-            Err(err) => match err.kind() {
-                std::io::ErrorKind::AlreadyExists => (),
+            Err(err) => match err {
+                Error::DestinationExists { .. } => (),
                 _ => panic!("expected kind AlreadyExists")
             }
         }
@@ -241,11 +331,7 @@ mod tests {
         let from = base_dir.as_ref().join("foo");
         let to = from.as_path().join("beez");
 
-        let copy_result = super::copy_dir(&from, &to);
-        assert!(copy_result.is_err());
-
-        let copy_err = copy_result.unwrap_err();
-        assert_eq!(copy_err.kind(), std::io::ErrorKind::Other);
+        let copy_result = super::copy_dir(&from, &to).unwrap();
     }
 
     fn assert_dirs_same<P: AsRef<Path>>(a: P, b: P) {
