@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](http://keepachangelog.com/).
 
+## [0.1.3] - 2023-07-24
+
+### Fixed
+
+- Bumped walkdir dependency to most recent version.
+- Removed uses of deprecated `try!` macro to banish warnings.
+
 ## [0.1.2] - 2016-10-31
 
 ### Fixed
@@ -17,5 +24,6 @@ is based on [Keep a Changelog](http://keepachangelog.com/).
 
 - Totally wrong description in `Cargo.toml`
 
+[0.1.3]: https://github.com/mdunsmuir/copy_dir/compare/0.1.2...0.1.3
 [0.1.2]: https://github.com/mdunsmuir/copy_dir/compare/0.1.1...0.1.2
 [0.1.1]: https://github.com/mdunsmuir/copy_dir/compare/0.1.0...0.1.1

@@ -5,8 +5,8 @@
 extern crate walkdir;
 
 use std::fs;
-use std::path::Path;
 use std::io::{Error, ErrorKind, Result};
+use std::path::Path;
 
 macro_rules! push_error {
     ($expr:expr, $vec:ident) => {
@@ -64,29 +64,21 @@ macro_rules! make_err {
 ///   twice.
 /// * Filesystem boundaries may be crossed.
 /// * Symbolic links will be copied, not followed.
-pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
-                                                -> Result<Vec<Error>> {
+pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q) -> Result<Vec<Error>> {
     if !from.as_ref().exists() {
-        return Err(make_err!(
-            "source path does not exist",
-            ErrorKind::NotFound
-        ));
-
+        return Err(make_err!("source path does not exist", ErrorKind::NotFound));
     } else if to.as_ref().exists() {
-        return Err(make_err!(
-            "target path exists",
-            ErrorKind::AlreadyExists
-        ))
+        return Err(make_err!("target path exists", ErrorKind::AlreadyExists));
     }
 
     let mut errors = Vec::new();
 
     // copying a regular file is EZ
     if from.as_ref().is_file() {
-        return fs::copy(&from, &to).map(|_| Vec::new() );
+        return fs::copy(&from, &to).map(|_| Vec::new());
     }
 
-    try!(fs::create_dir(&to));
+    fs::create_dir(&to)?;
 
     // The approach taken by this code (i.e. walkdir) will not gracefully
     // handle copying a directory into itself, so we're going to simply
@@ -96,15 +88,14 @@ pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
     // in users' faces. Ultimately I think a solution to this will involve
     // not using walkdir at all, and might come along with better handling
     // of hard links.
-    let target_is_under_source = try!(
-        from.as_ref()
-            .canonicalize()
-            .and_then(|fc| to.as_ref().canonicalize().map(|tc| (fc, tc) ))
-            .map(|(fc, tc)| tc.starts_with(fc) )
-    );
+    let target_is_under_source = from
+        .as_ref()
+        .canonicalize()
+        .and_then(|fc| to.as_ref().canonicalize().map(|tc| (fc, tc)))
+        .map(|(fc, tc)| tc.starts_with(fc))?;
 
     if target_is_under_source {
-        try!(fs::remove_dir(&to));
+        fs::remove_dir(&to)?;
 
         return Err(make_err!(
             "cannot copy to a path prefixed by the source path"
@@ -114,8 +105,8 @@ pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
     for entry in walkdir::WalkDir::new(&from)
         .min_depth(1)
         .into_iter()
-        .filter_map(|e| e.ok() ) {
-
+        .filter_map(|e| e.ok())
+    {
         let relative_path = match entry.path().strip_prefix(&from) {
             Ok(rp) => rp,
             Err(_) => panic!("strip_prefix failed; this is a probably a bug in copy_dir"),
@@ -134,8 +125,8 @@ pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
                     entry.path()
                 )));
 
-                continue
-            },
+                continue;
+            }
 
             Ok(md) => md,
         };
@@ -143,13 +134,9 @@ pub fn copy_dir<Q: AsRef<Path>, P: AsRef<Path>>(from: P, to: Q)
         if source_metadata.is_dir() {
             push_error!(fs::create_dir(&target_path), errors);
             push_error!(
-                fs::set_permissions(
-                    &target_path,
-                    source_metadata.permissions()
-                ),
+                fs::set_permissions(&target_path, source_metadata.permissions()),
                 errors
             );
-
         } else {
             push_error!(fs::copy(entry.path(), &target_path), errors);
         }
@@ -167,8 +154,8 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    extern crate walkdir;
     extern crate tempdir;
+    extern crate walkdir;
 
     #[test]
     fn single_file() {
@@ -178,13 +165,10 @@ mod tests {
 
     #[test]
     fn directory_with_file() {
-        let dir = Dir("foo", vec![
-            File("bar"),
-            Dir("baz", vec![
-                File("quux"),
-                File("fobe")
-            ])
-        ]);
+        let dir = Dir(
+            "foo",
+            vec![File("bar"), Dir("baz", vec![File("quux"), File("fobe")])],
+        );
         assert_we_match_the_real_thing(&dir, true, None);
     }
 
@@ -216,21 +200,18 @@ mod tests {
             Ok(_) => panic!("expected Err"),
             Err(err) => match err.kind() {
                 std::io::ErrorKind::AlreadyExists => (),
-                _ => panic!("expected kind AlreadyExists")
-            }
+                _ => panic!("expected kind AlreadyExists"),
+            },
         }
     }
 
     #[test]
     fn attempt_copy_under_self() {
         let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
-        let dir = Dir("foo", vec![
-            File("bar"),
-            Dir("baz", vec![
-                File("quux"),
-                File("fobe")
-            ])
-        ]);
+        let dir = Dir(
+            "foo",
+            vec![File("bar"), Dir("baz", vec![File("quux"), File("fobe")])],
+        );
         dir.create(&base_dir).unwrap();
 
         let from = base_dir.as_ref().join("foo");
@@ -257,16 +238,16 @@ mod tests {
             match *self {
                 Dir(ref name, ref contents) => {
                     let path = base.as_ref().join(name);
-                    try!(fs::create_dir(&path));
+                    fs::create_dir(&path)?;
 
                     for thing in contents {
-                        try!(thing.create(&path));
+                        thing.create(&path)?;
                     }
-                },
+                }
 
                 File(ref name) => {
                     let path = base.as_ref().join(name);
-                    try!(fs::File::create(path));
+                    fs::File::create(path)?;
                 }
             }
 
@@ -306,18 +287,19 @@ mod tests {
 
                     // TODO test permissions
                 }
-
             } else if o_na.is_none() && o_nb.is_none() {
-                return
+                return;
             } else {
                 assert!(false);
             }
         }
     }
 
-    fn assert_we_match_the_real_thing(dir: &DirMaker,
-                                      explicit_name: bool,
-                                      o_pre_state: Option<&DirMaker>) {
+    fn assert_we_match_the_real_thing(
+        dir: &DirMaker,
+        explicit_name: bool,
+        o_pre_state: Option<&DirMaker>,
+    ) {
         let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
 
         let source_dir = base_dir.as_ref().join("source");
@@ -334,7 +316,7 @@ mod tests {
         let (our_target, their_target) = if explicit_name {
             (
                 our_dir.as_path().join(dir.name()),
-                their_dir.as_path().join(dir.name())
+                their_dir.as_path().join(dir.name()),
             )
         } else {
             (our_dir.clone(), their_dir.clone())
@@ -362,13 +344,7 @@ mod tests {
 
     #[test]
     fn dir_maker_and_assert_dirs_same_baseline() {
-        let dir = Dir(
-            "foobar",
-            vec![
-                File("bar"),
-                Dir("baz", Vec::new())
-            ]
-        );
+        let dir = Dir("foobar", vec![File("bar"), Dir("baz", Vec::new())]);
 
         let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
 
@@ -387,21 +363,9 @@ mod tests {
     #[test]
     #[should_panic]
     fn assert_dirs_same_properly_fails() {
-        let dir = Dir(
-            "foobar",
-            vec![
-                File("bar"),
-                Dir("baz", Vec::new())
-            ]
-        );
+        let dir = Dir("foobar", vec![File("bar"), Dir("baz", Vec::new())]);
 
-        let dir2 = Dir(
-            "foobar",
-            vec![
-                File("fobe"),
-                File("beez")
-            ]
-        );
+        let dir2 = Dir("foobar", vec![File("fobe"), File("beez")]);
 
         let base_dir = tempdir::TempDir::new("copy_dir_test").unwrap();
 
@@ -416,5 +380,4 @@ mod tests {
 
         assert_dirs_same(&a_path, &b_path);
     }
-
 }
