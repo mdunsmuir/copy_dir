@@ -6,6 +6,7 @@ license = "MIT"
 readme = "README.md"
 authors = ["Michael Dunsmuir <mjdunsmuir@gmail.com>"]
 homepage = "https://github.com/mdunsmuir/copy_dir"
+repository = "https://github.com/mdunsmuir/copy_dir"
 documentation = "https://docs.rs/copy_dir"
 include = [
     "**/*.rs",
